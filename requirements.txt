@@ -82,6 +82,7 @@ soupsieve==2.7
 stack-data==0.6.3
 streamlit==1.48.1
 streamlit-plotly-events==0.0.6
+streamlit-searchbox==0.1.23
 tenacity==9.1.2
 threadpoolctl==3.6.0
 toml==0.10.2
