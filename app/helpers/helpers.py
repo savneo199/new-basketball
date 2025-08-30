@@ -7,6 +7,7 @@ import zipfile
 import joblib
 import pandas as pd
 import streamlit as st
+import duckdb 
 
 from get_paths import ROOT, DATA_DIR, RAW_BASE, ART_DIR
 
@@ -20,6 +21,12 @@ def hash_data_folder() -> str:
         except Exception:
             pass
     return h.hexdigest()
+
+@st.cache_data(show_spinner=False)
+def load_duckdb(db_path: Path, table: str = "processed") -> pd.DataFrame:
+    with duckdb.connect(str(db_path), read_only=True) as con:
+        # safer than building SQL; no need to escape the identifier
+        return con.table(table).df()
 
 # Caches
 @st.cache_data(show_spinner=False)
@@ -44,7 +51,8 @@ def latest_artifacts():
         return None
     return {
         "root": latest,
-        "processed": latest / "processed.parquet",
+        # "processed": latest / "processed.parquet",
+        "processed": latest / "processed.duckdb",
         "model": latest / "kmeans_model.joblib",
         "summary": latest / "cluster_summary.json",
         "selection": latest / "selection.json",

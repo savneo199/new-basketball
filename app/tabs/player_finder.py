@@ -1,39 +1,34 @@
-# tabs/player_finder.py
 from __future__ import annotations
 from pathlib import Path
 import pandas as pd
 import streamlit as st
-from streamlit_searchbox import st_searchbox  # pip install streamlit-searchbox
 
 from helpers.helpers import latest_artifacts, load_parquet
 
 CORE_SHOW = [
     "player_ind", "college", "season", "position", "player_number_ind",
-    "minutes_tot_ind", "mins_per_game",
-    "pts_per_game", "reb_per_game", "ast_per_game",
-    "stl_per_game", "blk_per_game",
-    "eFG_pct", "USG_pct", "Archetype"
+    "minutes_tot_ind", "mins_per_game", "pts_per_game", "reb_per_game", "ast_per_game",
+    "stl_per_game", "blk_per_game", "eFG_pct", "USG_pct", "Archetype"
 ]
 
-# ---------- data helpers ----------
 def _load_df() -> pd.DataFrame | None:
     paths = latest_artifacts()
     if not paths or not Path(paths["processed"]).exists():
         return None
-    return load_parquet(Path(paths["processed"]))
+    try:
+        return load_parquet(Path(paths["processed"]))
+    except Exception:
+        return None
 
-def _unique_names(df: pd.DataFrame) -> list[str]:
-    if "player_ind" not in df.columns:
+def _search_names(df: pd.DataFrame, query: str) -> list[str]:
+    if not query:
         return []
-    return sorted(df["player_ind"].astype(str).dropna().unique().tolist())
+    s = df.get("player_ind") if "player_ind" in df.columns else None
+    if s is None:
+        return []
+    mask = s.astype(str).str.contains(query.strip(), case=False, na=False)
+    return sorted(s[mask].dropna().unique().tolist())
 
-def _suggest(names: list[str], q: str, limit: int = 20) -> list[str]:
-    ql = q.lower().strip()
-    starts = [n for n in names if n.lower().startswith(ql)]
-    contains = [n for n in names if ql in n.lower() and not n.lower().startswith(ql)]
-    return (starts + contains)[:limit]
-
-# ---------- UI ----------
 def render():
     st.subheader("Player finder")
 
@@ -42,58 +37,55 @@ def render():
         st.info("No processed data found. Run the pipeline first.")
         return
 
-    names = _unique_names(df)
-    if not names:
-        st.info("No player names in the dataset.")
-        return
+    q = st.text_input("Search by player name", placeholder="Type at least 2 characters…")
+    suggestions = _search_names(df, q) if len(q.strip()) >= 2 else []
 
-    if "pf_query" not in st.session_state:
-        st.session_state["pf_query"] = ""
+    if suggestions:
+        name = st.selectbox("Matches", suggestions, index=0)
+        sub = df[df["player_ind"].astype(str) == str(name)].copy()
 
-    def _search(q: str) -> list[str]:
-        return _suggest(names, q, 12) if len(q.strip()) >= 2 else []
+        # season selector when multiple rows
+        season_opt = None
+        if "season" in sub.columns:
+            uniq = sorted(sub["season"].dropna().unique().tolist())
+            if len(uniq) > 1:
+                season_opt = st.selectbox("Season", uniq, index=0)
+                sub = sub[sub["season"] == season_opt]
 
-    picked = st_searchbox(
-        search_function=_search,
-        key="pf_searchbox",
-        default=st.session_state["pf_query"],
-        placeholder="Search player…",
-    )
+        # if multiple rows remain (e.g. different colleges same season), let user pick college too
+        if len(sub) > 1 and "college" in sub.columns:
+            colleges = sorted(sub["college"].dropna().unique().tolist())
+            if len(colleges) > 1:
+                college_opt = st.selectbox("College", colleges, index=0)
+                sub = sub[sub["college"] == college_opt]
 
-    if not picked:
-        st.caption("Start typing (≥2 chars) and pick a player.")
-        return
+        if sub.empty:
+            st.warning("No row found for that selection.")
+            return
 
-    st.session_state["pf_query"] = picked
-    selected_name = picked
+        row = sub.iloc[0]
+        title = f"{row.get('player_ind','Player')} — {row.get('college','')} ({row.get('season','')})"
+        st.markdown(f"### {title}")
 
-    sub = df[df["player_ind"].astype(str) == str(selected_name)].copy()
-    if sub.empty:
-        st.warning("No rows found for that player.")
-        return
+        # KPI row (per-game)
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("PTS", f"{float(row.get('pts_per_game',0) or 0):.1f}")
+        c2.metric("REB", f"{float(row.get('reb_per_game',0) or 0):.1f}")
+        c3.metric("AST", f"{float(row.get('ast_per_game',0) or 0):.1f}")
+        c4.metric("STL", f"{float(row.get('stl_per_game',0) or 0):.1f}")
+        c5.metric("BLK", f"{float(row.get('blk_per_game',0) or 0):.1f}")
 
-    if "season" in sub.columns:
-        seasons = sorted(sub["season"].dropna().unique().tolist())
-        if len(seasons) > 1:
-            season_opt = st.selectbox("Season", seasons, index=0)
-            sub = sub[sub["season"] == season_opt]
+        # Details table
+        cols = [c for c in CORE_SHOW if c in sub.columns]
+        pretty = sub[cols].copy()
+        st.dataframe(pretty, use_container_width=True)
 
-    if len(sub) > 1 and "college" in sub.columns:
-        colleges = sorted(sub["college"].dropna().unique().tolist())
-        if len(colleges) > 1:
-            college_opt = st.selectbox("College", colleges, index=0)
-            sub = sub[sub["college"] == college_opt]
-
-    if sub.empty:
-        st.warning("No row left after filters.")
-        return
-
-    row = sub.iloc[0]
-    title = f"{row.get('player_ind','Player')} — {row.get('college','')} ({row.get('season','')})"
-    st.markdown(f"### {title}")
-
-    def _num(v):
-        try:
-            return float(v) if v is not None and not pd.isna(v) else 0.0
-        except Exception:
-            return 0.0
+        # Download
+        st.download_button(
+            "Download row (CSV)",
+            data=pretty.to_csv(index=False).encode(),
+            file_name=f"{row.get('player_ind','player')}_{row.get('season','')}.csv",
+            mime="text/csv",
+        )
+    elif q:
+        st.info("No matches yet. Keep typing or try a different name.")
