@@ -23,11 +23,13 @@ CART_KEY = "compare_cart"
 # ----------------------------
 # Caching helpers
 # ----------------------------
-@st.cache_data(show_spinner=False)
-def _load_processed_duckdb(processed_path: Path) -> pd.DataFrame:
+# @st.cache_data(show_spinner=False)
+@st.cache_data(ttl=24*3600, max_entries=10)   # cache per instance
+def load_processed_duckdb(processed_path: Path) -> pd.DataFrame:
     return load_duckdb(processed_path)
 
-@st.cache_data(show_spinner=False)
+# @st.cache_data(show_spinner=False)
+@st.cache_data(ttl=24*3600)
 def _normalized_team_lists(df: pd.DataFrame):
     """Return team display list and norm column availability once, cached."""
     has_college = "college" in df.columns
@@ -51,7 +53,7 @@ def render():
         st.info("Run pipeline to populate processed data.")
         return
 
-    df = _load_processed_duckdb(paths["processed"]).copy()
+    df = load_processed_duckdb(paths["processed"]).copy()
 
     # Normalize college display columns
     if "college" in df.columns:
@@ -66,6 +68,7 @@ def render():
         return
 
     # ---- Team + season selectors
+    
     TEAM_COL_DISPLAY = "college_display"
     teams = sorted(df[TEAM_COL_DISPLAY].dropna().unique().tolist())
     team_display = st.selectbox("Team", teams, index=0 if teams else None)
