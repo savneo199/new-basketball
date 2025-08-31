@@ -17,9 +17,6 @@ def render():
             st.cache_data.clear()
             st.cache_resource.clear()
             st.success("Refreshed")
-
-
-    
         
     st.subheader("Cluster Composition by Archetype")
     paths = latest_artifacts()

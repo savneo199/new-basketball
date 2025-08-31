@@ -1,11 +1,10 @@
-
 import streamlit as st
-from tabs import train_explore, uploads, home, historical_data
+from tabs import train_explore, historical_data, uploads, home, archetypes
 
 st.set_page_config(page_title="Coach Scouting Dashboard", layout="wide")
 
-tab_home, tab_train, tab_hist, tab_upload = st.tabs(
-    ["Home", "Train & Explore", "Team & Player Data", "Upload & Classify"]
+tab_home, tab_train, tab_hist, tab_arch, tab_upload = st.tabs(
+    ["Home", "Train & Explore", "Team & Player Data", "Archetypes", "Upload & Classify"]
 )
 
 with tab_home:
@@ -16,6 +15,9 @@ with tab_train:
 
 with tab_hist:
     historical_data.render()
+
+with tab_arch:
+    archetypes.render()
 
 with tab_upload:
     uploads.render()

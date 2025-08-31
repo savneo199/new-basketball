@@ -23,7 +23,6 @@ def hash_data_folder() -> str:
     return h.hexdigest()
 
 @st.cache_data(show_spinner=False)
-
 def load_duckdb(db_path: Path, table: str = "processed") -> pd.DataFrame:
     with duckdb.connect(str(db_path), read_only=True) as con:
         # safer than building SQL; no need to escape the identifier
