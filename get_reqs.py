@@ -2,6 +2,7 @@ import os
 import json
 import ast
 
+
 try:
     # For Python 3.8+
     from importlib.metadata import version, PackageNotFoundError
