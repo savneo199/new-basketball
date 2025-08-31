@@ -1,3 +1,4 @@
+# historical_data.py
 import streamlit as st
 import pandas as pd
 import json
@@ -5,7 +6,7 @@ from pathlib import Path
 
 from helpers.helpers import (
     latest_artifacts,
-    load_parquet,
+    load_parquet,      # kept in case used elsewhere
     rename_columns,
     load_json_file,
     load_duckdb,
@@ -17,9 +18,31 @@ from helpers.court_builder import make_lineup_figure
 from streamlit_plotly_events import plotly_events
 import plotly.graph_objects as go
 
-CART_KEY = "compare_cart" 
+CART_KEY = "compare_cart"
 
+# ----------------------------
+# Caching helpers
+# ----------------------------
+@st.cache_data(show_spinner=False)
+def _load_processed_duckdb(processed_path: Path) -> pd.DataFrame:
+    return load_duckdb(processed_path)
 
+@st.cache_data(show_spinner=False)
+def _normalized_team_lists(df: pd.DataFrame):
+    """Return team display list and norm column availability once, cached."""
+    has_college = "college" in df.columns
+    if not has_college:
+        return [], False
+
+    df = df.copy()
+    df[" college_norm"] = df["college"].astype(str).str.strip().str.lower()
+    df["college_display"] = df[" college_norm"].map(COLLEGE_MAP).fillna(df["college"])
+    teams = sorted(df["college_display"].dropna().unique().tolist())
+    return teams, True
+
+# ----------------------------
+# Main render
+# ----------------------------
 def render():
     st.subheader("Roster & Metrics")
 
@@ -28,15 +51,9 @@ def render():
         st.info("Run pipeline to populate processed data.")
         return
 
-    # df = load_parquet(paths["processed"]).copy()
-    # if "college" in df.columns:
-    #     df[" college_norm"] = df["college"].astype(str).str.strip().str.lower()
-    #     df["college_display"] = df[" college_norm"].map(COLLEGE_MAP).fillna(df["college"])
-    # else:
-    #     st.info("College names not found.")
-    #     return
-    
-    df = load_duckdb(paths["processed"]).copy()
+    df = _load_processed_duckdb(paths["processed"]).copy()
+
+    # Normalize college display columns
     if "college" in df.columns:
         df[" college_norm"] = df["college"].astype(str).str.strip().str.lower()
         df["college_display"] = df[" college_norm"].map(COLLEGE_MAP).fillna(df["college"])
@@ -48,7 +65,7 @@ def render():
         st.warning("Expected column 'season' not found in processed data.")
         return
 
-    # Team + season selectors
+    # ---- Team + season selectors
     TEAM_COL_DISPLAY = "college_display"
     teams = sorted(df[TEAM_COL_DISPLAY].dropna().unique().tolist())
     team_display = st.selectbox("Team", teams, index=0 if teams else None)
@@ -69,10 +86,10 @@ def render():
         st.info("Select both Team and Season to view the roster.")
         return
 
-    # Filter for this team and season
+    # ---- Filter for this team and season
     filt = df[(df[" college_norm"] == selected_norm) & (df["season"] == season)].copy()
 
-    # Roster table
+    # ---- Roster table (read-only)
     if show_adv:
         drop_cols = [c for c in [" college_norm", "college_display", "college", "season"] if c in filt.columns]
         view = filt.drop(columns=drop_cols).copy()
@@ -85,33 +102,63 @@ def render():
         cols = [c for c in minimal_cols if c in filt.columns]
         view = filt[cols].copy()
 
-    # Add compare checkbox to THIS table
-    view.insert(0, "Compare?", False)
-
     # Pretty headers for display
     view_display = rename_columns(view.copy())
 
-    # Render with data_editor so the checkbox is editable
-    edited = st.data_editor(
-        view_display,
-        hide_index=True,
-        use_container_width=True,
-        num_rows="fixed",
-        column_config={
-            "Compare?": st.column_config.CheckboxColumn(help="Tick up to 3 players to compare"),
-        },
-    )
+    # Render table efficiently (no editing/checkboxes)
+    st.dataframe(view_display, hide_index=True, use_container_width=True)
 
-    # Clean download 
-    download_display = view_display.drop(columns=[c for c in ["Compare?"] if c in view_display.columns])
+    # ---- Lightweight selection for compare (replaces per-row checkboxes)
+    st.markdown("##### Select players to compare")
+    PLAYER_NAME_COL = "Player Name" if "Player Name" in view_display.columns else ("player_ind" if "player_ind" in view_display.columns else None)
+    if PLAYER_NAME_COL is None:
+        st.info("Player name column not found.")
+        return
+
+    player_options = view_display[PLAYER_NAME_COL].astype(str).dropna().unique().tolist()
+
+    # Soft cap at 3 (works across Streamlit versions)
+    selected_players = st.multiselect(
+        "Pick up to 3 players",
+        player_options,
+        default=[],
+        help="Search by name; selections are limited to 3."
+    )
+    if len(selected_players) > 3:
+        selected_players = selected_players[:3]
+        st.warning("Kept the first 3 selections.")
+
+    if st.button("Add selected to compare"):
+        if not selected_players:
+            st.info("No players selected.")
+        else:
+            college_val = str(filt["college"].iloc[0]) if "college" in filt.columns and not filt.empty else ""
+            cart = st.session_state.get(CART_KEY, [])
+            for name in selected_players:
+                item = {"player_ind": str(name).strip(), "season": str(season), "college": college_val}
+                if len(cart) >= 3:
+                    break
+                if not any(
+                    (c.get("player_ind",""), c.get("season",""), c.get("college",""))
+                    == (item["player_ind"], item["season"], item["college"])
+                    for c in cart
+                ):
+                    cart.append(item)
+            st.session_state[CART_KEY] = cart
+            if len(cart) >= 3:
+                st.warning("Compare limit is 3 players. Extra selections were ignored.")
+
+    # Clean download
     st.download_button(
         "Download CSV (current selection)",
-        data=download_display.to_csv(index=False).encode(),
+        data=view_display.to_csv(index=False).encode(),
         file_name=f"{team_display}_{season}_players.csv",
         mime="text/csv",
     )
 
+    # ----------------------------
     # Predict lineup
+    # ----------------------------
     st.markdown("---")
     st.subheader("Predict lineup")
 
@@ -145,7 +192,7 @@ def render():
             if pos_guess == "C":            return ["C", "PF", "SF", "SG", "PG"]
             return ["SF", "PF", "PG", "SG", "C"]
 
-        for row in leftovers:
+        for _, row in enumerate(leftovers):
             raw_pos = str(row.get("position", "") or "")
             guess = normalize_position(raw_pos)
             if not guess:
@@ -170,7 +217,7 @@ def render():
 
         # Build label, jersey numbers, and hover stats
         labels, numbers, stats_list, names_for_click = [], [], [], []
-        for r in rows:
+        for _, r in enumerate(rows):
             name = r.get("player_ind", "Player")
             arch = r.get("Archetype", "")
             labels.append(f"{name} ({arch})" if arch else str(name))
@@ -239,49 +286,39 @@ def render():
                     c4.metric("BLK/Game", f"{float(s['BLK/Game']):.3f}")
                     efgtxt = f"{float(s['eFG%']):.3f}%" if s['eFG%'] is not None else "—"
                     c5.metric("eFG%", efgtxt)
+
+                    # Click-to-add: quick way to push the clicked player into the cart
+                    if st.button(f"Add {nm} to compare", key=f"add_{nm}_{season}"):
+                        college_val = str(filt["college"].iloc[0]) if "college" in filt.columns and not filt.empty else ""
+                        item = {"player_ind": nm, "season": str(season), "college": college_val}
+                        cart = st.session_state.get(CART_KEY, [])
+                        if len(cart) < 3 and not any(
+                            (c.get("player_ind",""), c.get("season",""), c.get("college",""))
+                            == (item["player_ind"], item["season"], item["college"])
+                            for c in cart
+                        ):
+                            cart.append(item)
+                            st.session_state[CART_KEY] = cart
+                            st.success(f"Added {nm} to compare.")
+                        elif len(cart) >= 3:
+                            st.warning("Compare limit is 3 players.")
+                        else:
+                            st.info("Player already in compare list.")
             else:
                 st.caption("Tip: click a circle to pin a stat card; hover for details.")
         except Exception:
             st.plotly_chart(fig, use_container_width=True, key=f"lineup_chart_{selected_norm}_{season}")
             st.caption("Tip: hover a circle to see stats. (Install `streamlit-plotly-events` to enable click.)")
 
+    # ----------------------------
     # Inline comparison
+    # ----------------------------
     st.markdown("---")
     st.markdown("#### Comparison")
 
     # Build / init cart
     if CART_KEY not in st.session_state:
         st.session_state[CART_KEY] = []
-
-    # After rename, the display name for player is "Player Name"
-    PLAYER_NAME_COL = "Player Name" if "Player Name" in edited.columns else "player_ind"
-
-    # When user clicks "Add checked", push to cart
-    if st.button("Add checked to compare"):
-        checked = edited[edited["Compare?"] == True] if "Compare?" in edited.columns else edited.iloc[0:0]
-        if checked.empty:
-            st.info("No rows were checked.")
-        else:
-            # College and season are constant in this view
-            college_val = str(filt["college"].iloc[0]) if "college" in filt.columns and not filt.empty else ""
-            cart = st.session_state[CART_KEY]
-            for _, row in checked.iterrows():
-                name = str(row.get(PLAYER_NAME_COL, "")).strip()
-                if not name:
-                    continue
-                item = {"player_ind": name, "season": str(season), "college": college_val}
-                # Max 3 unique players
-                if len(cart) >= 3:
-                    break
-                if not any(
-                    (c.get("player_ind",""), c.get("season",""), c.get("college",""))
-                    == (item["player_ind"], item["season"], item["college"])
-                    for c in cart
-                ):
-                    cart.append(item)
-            st.session_state[CART_KEY] = cart
-            if len(cart) >= 3:
-                st.warning("Compare limit is 3 players. Extra selections were ignored.")
 
     cart = st.session_state[CART_KEY]
     if cart:
@@ -328,7 +365,7 @@ def render():
                 c5.metric("BLK/G", f"{_num(r.get('blk_per_game')):.1f}")
                 st.caption(f"{r.get('player_ind','')} — {r.get('college','')} ({r.get('season','')})")
 
-            # Radar chart 
+            # Radar chart
             COMPARE_METRICS = [
                 ("pts_per_game", "PTS/G"),
                 ("reb_per_game", "REB/G"),
@@ -374,7 +411,7 @@ def render():
             # Spacer between radar and table
             st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
 
-            # Side-by-side table 
+            # Side-by-side table
             show_cols = [
                 "player_ind","college","season","position","Archetype",
                 "pts_per_game","reb_per_game","ast_per_game","stl_per_game","blk_per_game",
@@ -392,9 +429,11 @@ def render():
         else:
             st.info("No matching rows found for items in the compare cart.")
     else:
-        st.caption("Tip: tick **Compare?** for up to 3 players and click **Add checked to compare**.")
+        st.caption("Tip: use the multiselect above (or click a lineup circle) to add up to 3 players to compare.")
 
+    # ----------------------------
     # Notes section
+    # ----------------------------
     st.markdown("---")
     st.subheader("Notes & Comments")
 
