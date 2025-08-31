@@ -1,6 +1,6 @@
-from app.tabs import historical_data1
+
 import streamlit as st
-from tabs import train_explore, uploads, home
+from tabs import train_explore, uploads, home, historical_data
 
 st.set_page_config(page_title="Coach Scouting Dashboard", layout="wide")
 
@@ -15,7 +15,7 @@ with tab_train:
     train_explore.render()
 
 with tab_hist:
-    historical_data1.render()
+    historical_data.render()
 
 with tab_upload:
     uploads.render()
