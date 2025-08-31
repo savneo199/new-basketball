@@ -35,4 +35,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 
 # 👉 Update app path below if your entry file differs
 # e.g. "streamlit run app/streamlit_app.py" or "streamlit run app/main.py"
-CMD ["streamlit", "run", "app/app.py"]
+CMD ["streamlit", "run", "app/app_v4.py"]
