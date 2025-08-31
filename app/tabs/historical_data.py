@@ -1,8 +1,8 @@
-# historical_data.py (optimized)
-# - Loads DuckDB -> DataFrame once per container
-# - Caches team & season lists
-# - Caps table render size (browser stays snappy)
-# - O(1) row lookup for comparison (no full-DF scans)
+# historical_data.py (no compare feature, optimized)
+# - Loads DuckDB -> DataFrame once per container (cache_resource)
+# - Caches team & season lists (cache_data)
+# - Caps table size for smooth scrolling
+# - Lineup click shows quick stats (no add-to-compare)
 
 from pathlib import Path
 import json
@@ -22,7 +22,6 @@ from helpers.helpers import (
 from helpers.archetype_positions import normalize_position, positions_for_archetype
 from helpers.court_builder import make_lineup_figure
 
-CART_KEY = "compare_cart"
 MAX_TABLE_ROWS = 1000  # cap UI table rows for responsiveness
 
 
@@ -62,23 +61,6 @@ def _seasons_for_norm(data_version: str, df: pd.DataFrame, norm: str) -> tuple:
             df.loc[df[" college_norm"] == norm, "season"].dropna().astype(str).unique().tolist()
         )
     )
-
-
-@st.cache_resource(show_spinner=False)
-def _build_row_index(df: pd.DataFrame) -> dict[str, int]:
-    """
-    Build an index mapping "player|season|college" -> row index
-    so comparison lookups are O(1) without scanning the whole DF.
-    """
-    # Ensure string dtype to avoid NaN vs None mismatches
-    key = (
-        df.get("player_ind", pd.Series("", index=df.index)).astype("string")
-        + "|"
-        + df.get("season", pd.Series("", index=df.index)).astype("string")
-        + "|"
-        + df.get("college", pd.Series("", index=df.index)).astype("string")
-    )
-    return dict(zip(key, df.index))
 
 
 # ----------------------------
@@ -211,47 +193,6 @@ def render():
         mime="text/csv",
     )
 
-    # ---- Selection for compare ----
-    st.markdown("##### Select players to compare")
-    PLAYER_NAME_COL = (
-        "Player Name"
-        if "Player Name" in view_display.columns
-        else ("player_ind" if "player_ind" in view_display.columns else None)
-    )
-    if PLAYER_NAME_COL is None:
-        st.info("Player name column not found.")
-        return
-
-    player_options = view_display[PLAYER_NAME_COL].astype(str).dropna().unique().tolist()
-    selected_players = st.multiselect(
-        "Pick up to 3 players",
-        player_options,
-        default=[],
-        help="Search by name; selections are limited to 3.",
-    )
-    if len(selected_players) > 3:
-        selected_players = selected_players[:3]
-        st.warning("Kept the first 3 selections.")
-
-    if st.button("Add selected to compare"):
-        if not selected_players:
-            st.info("No players selected.")
-        else:
-            college_val = str(filt["college"].iloc[0]) if "college" in filt.columns and not filt.empty else ""
-            cart = st.session_state.get(CART_KEY, [])
-            for name in selected_players:
-                item = {"player_ind": str(name).strip(), "season": str(season), "college": college_val}
-                if len(cart) >= 3:
-                    break
-                sig = (item["player_ind"], item["season"], item["college"])
-                if not any(
-                    (c.get("player_ind", ""), c.get("season", ""), c.get("college", "")) == sig for c in cart
-                ):
-                    cart.append(item)
-            st.session_state[CART_KEY] = cart
-            if len(cart) >= 3:
-                st.warning("Compare limit is 3 players. Extra selections were ignored.")
-
     # ----------------------------
     # Predict lineup
     # ----------------------------
@@ -267,229 +208,89 @@ def render():
 
     if not minutes_col:
         st.info("Not enough data to build a lineup (need minutes).")
-    else:
-        # Top 5 by minutes
-        top5 = filt.sort_values(minutes_col, ascending=False).head(5).reset_index(drop=True)
-        rows, slots_order = _assign_slots_by_position(top5)
+        return
 
-        # Build labels, numbers, and stats
-        labels, numbers, stats_list, names_for_click = [], [], [], []
-        for _, r in enumerate(rows):
-            name = r.get("player_ind", "Player")
-            arch = r.get("Archetype", "")
-            labels.append(f"{name} ({arch})" if arch else str(name))
+    # Top 5 by minutes
+    top5 = filt.sort_values(minutes_col, ascending=False).head(5).reset_index(drop=True)
+    rows, slots_order = _assign_slots_by_position(top5)
 
-            # jersey number
-            num = ""
-            if "player_number_ind" in r.index:
-                try:
-                    num = str(int(float(r["player_number_ind"])))
-                except Exception:
-                    num = str(r["player_number_ind"])
-            numbers.append(num)
+    # Build labels, numbers, and stats
+    labels, numbers, stats_list, names_for_click = [], [], [], []
+    for _, r in enumerate(rows):
+        name = r.get("player_ind", "Player")
+        arch = r.get("Archetype", "")
+        labels.append(f"{name} ({arch})" if arch else str(name))
 
-            # eFG% to %
-            efg = r.get("eFG_pct")
-            if pd.notna(efg):
-                try:
-                    efg = float(efg)
-                    if efg <= 1.0:
-                        efg *= 100.0
-                except Exception:
-                    efg = None
-            else:
+        # jersey number
+        num = ""
+        if "player_number_ind" in r.index:
+            try:
+                num = str(int(float(r["player_number_ind"])))
+            except Exception:
+                num = str(r["player_number_ind"])
+        numbers.append(num)
+
+        # eFG% to %
+        efg = r.get("eFG_pct")
+        if pd.notna(efg):
+            try:
+                efg = float(efg)
+                if efg <= 1.0:
+                    efg *= 100.0
+            except Exception:
                 efg = None
-
-            stats_list.append(
-                {
-                    "PTS/Game": r.get("pts_per_game", 0.0),
-                    "AST/Game": r.get("ast_per_game", 0.0),
-                    "REB/Game": r.get("reb_per_game", 0.0),
-                    "STL/Game": r.get("stl_per_game", 0.0),
-                    "BLK/Game": r.get("blk_per_game", 0.0),
-                    "eFG%": efg,
-                }
-            )
-            names_for_click.append(str(name))
-
-        fig = make_lineup_figure(
-            labels,
-            title=f"Possible lineup for {team_display} ({season})",
-            slots_order=slots_order,
-            numbers=numbers,
-            stats=stats_list,
-        )
-
-        lineup_plotly_key = f"lineup_click_{selected_norm}_{season}"
-
-        try:
-            selected = plotly_events(
-                fig,
-                click_event=True,
-                hover_event=False,
-                select_event=False,
-                key=lineup_plotly_key,
-            )
-            if selected:
-                idx = selected[0].get("pointIndex", selected[0].get("pointNumber", 0))
-                idx = int(idx)
-                if 0 <= idx < len(stats_list):
-                    s = stats_list[idx]
-                    nm = names_for_click[idx]
-                    st.markdown(f"**{nm} — quick stats**")
-                    c1, c2, c3, c4, c5 = st.columns(5)
-                    c1.metric("PTS/Game", f"{float(s['PTS/Game']):.3f}")
-                    c2.metric("AST/Game", f"{float(s['AST/Game']):.3f}")
-                    c3.metric("REB/Game", f"{float(s['REB/Game']):.3f}")
-                    c4.metric("BLK/Game", f"{float(s['BLK/Game']):.3f}")
-                    efgtxt = f"{float(s['eFG%']):.3f}%" if s["eFG%"] is not None else "—"
-                    c5.metric("eFG%", efgtxt)
-
-                    if st.button(f"Add {nm} to compare", key=f"add_{nm}_{season}"):
-                        college_val = (
-                            str(filt["college"].iloc[0]) if "college" in filt.columns and not filt.empty else ""
-                        )
-                        item = {"player_ind": nm, "season": str(season), "college": college_val}
-                        cart = st.session_state.get(CART_KEY, [])
-                        sig = (item["player_ind"], item["season"], item["college"])
-                        if len(cart) < 3 and not any(
-                            (c.get("player_ind", ""), c.get("season", ""), c.get("college", "")) == sig for c in cart
-                        ):
-                            cart.append(item)
-                            st.session_state[CART_KEY] = cart
-                            st.success(f"Added {nm} to compare.")
-                        elif len(cart) >= 3:
-                            st.warning("Compare limit is 3 players.")
-                        else:
-                            st.info("Player already in compare list.")
-            else:
-                st.caption("Tip: click a circle to pin a stat card; hover for details.")
-        except Exception:
-            st.plotly_chart(fig, use_container_width=True, key=f"lineup_chart_{selected_norm}_{season}")
-            st.caption("Tip: hover a circle to see stats. (Install `streamlit-plotly-events` to enable click.)")
-
-    # ----------------------------
-    # Inline comparison
-    # ----------------------------
-    st.markdown("---")
-    st.markdown("#### Comparison")
-
-    if CART_KEY not in st.session_state:
-        st.session_state[CART_KEY] = []
-    cart = st.session_state[CART_KEY]
-
-    if cart:
-        cA, cB = st.columns([1, 4])
-        with cA:
-            if st.button("Clear all"):
-                st.session_state[CART_KEY] = []
-                st.rerun()
-        with cB:
-            chip_cols = st.columns(len(cart))
-            for i, it in enumerate(list(cart)):
-                with chip_cols[i]:
-                    st.caption(f"{it['player_ind']} — {it['college']} ({it['season']})")
-                    if st.button("Remove", key=f"rm_{i}"):
-                        st.session_state[CART_KEY].pop(i)
-                        st.rerun()
-
-        # O(1) lookups using prebuilt index
-        idx_map = _build_row_index(df)
-        rows = []
-        for it in st.session_state[CART_KEY]:
-            k = f"{it['player_ind']}|{it['season']}|{it['college']}"
-            idx = idx_map.get(k)
-            if idx is not None:
-                rows.append(df.iloc[idx])
-
-        if rows:
-            # KPI strip per player
-            for r in rows:
-                c1, c2, c3, c4, c5 = st.columns(5)
-                c1.metric("PTS/G", f"{_num(r.get('pts_per_game')):.1f}")
-                c2.metric("REB/G", f"{_num(r.get('reb_per_game')):.1f}")
-                c3.metric("AST/G", f"{_num(r.get('ast_per_game')):.1f}")
-                c4.metric("STL/G", f"{_num(r.get('stl_per_game')):.1f}")
-                c5.metric("BLK/G", f"{_num(r.get('blk_per_game')):.1f}")
-                st.caption(f"{r.get('player_ind','')} — {r.get('college','')} ({r.get('season','')})")
-
-            # Radar chart
-            COMPARE_METRICS = [
-                ("pts_per_game", "PTS/G"),
-                ("reb_per_game", "REB/G"),
-                ("ast_per_game", "AST/G"),
-                ("stl_per_game", "STL/G"),
-                ("blk_per_game", "BLK/G"),
-                ("eFG_pct", "eFG%"),
-                ("USG_pct", "USG%"),
-            ]
-            cats = [n for _, n in COMPARE_METRICS]
-            fig = go.Figure()
-
-            max_by_metric = []
-            for k, _ in COMPARE_METRICS:
-                vals = []
-                for rr in rows:
-                    v = _num(rr.get(k))
-                    if k == "eFG_pct" or k.endswith("_pct"):
-                        if v <= 1.0:
-                            v *= 100.0
-                    vals.append(v)
-                max_by_metric.append(max(vals) if vals else 1.0)
-
-            for rr in rows:
-                vals = []
-                for (k, _), vmax in zip(COMPARE_METRICS, max_by_metric):
-                    v = _num(rr.get(k))
-                    if k == "eFG_pct" or k.endswith("_pct"):
-                        if v <= 1.0:
-                            v *= 100.0
-                    vals.append(0.0 if vmax == 0 else v / vmax)
-                vals.append(vals[0])
-                label = f"{rr.get('player_ind','')} — {rr.get('college','')} ({rr.get('season','')})"
-                fig.add_trace(go.Scatterpolar(r=vals, theta=cats + [cats[0]], fill="toself", name=label))
-
-            fig.update_layout(
-                polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
-                showlegend=True,
-                height=520,
-                margin=dict(l=10, r=10, t=10, b=10),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-            )
-            st.plotly_chart(fig, use_container_width=True, key=f"cmp_radar_{selected_norm}_{season}")
-
-            # Spacer between radar and table
-            st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
-
-            # Side-by-side table
-            show_cols = [
-                "player_ind",
-                "college",
-                "season",
-                "position",
-                "Archetype",
-                "pts_per_game",
-                "reb_per_game",
-                "ast_per_game",
-                "stl_per_game",
-                "blk_per_game",
-                "eFG_pct",
-                "USG_pct",
-            ]
-            table = pd.DataFrame([{c: r.get(c) for c in show_cols if c in r.index} for r in rows])
-
-            if "eFG_pct" in table.columns:
-                table["eFG_pct"] = table["eFG_pct"].apply(lambda v: (_num(v) * 100.0 if _num(v) <= 1 else _num(v)))
-            if "USG_pct" in table.columns:
-                table["USG_pct"] = table["USG_pct"].apply(_num)
-
-            pretty_table = rename_columns(table)
-            st.dataframe(pretty_table, use_container_width=True)
         else:
-            st.info("No matching rows found for items in the compare cart.")
-    else:
-        st.caption("Tip: use the multiselect above (or click a lineup circle) to add up to 3 players to compare.")
+            efg = None
+
+        stats_list.append(
+            {
+                "PTS/Game": r.get("pts_per_game", 0.0),
+                "AST/Game": r.get("ast_per_game", 0.0),
+                "REB/Game": r.get("reb_per_game", 0.0),
+                "STL/Game": r.get("stl_per_game", 0.0),
+                "BLK/Game": r.get("blk_per_game", 0.0),
+                "eFG%": efg,
+            }
+        )
+        names_for_click.append(str(name))
+
+    fig = make_lineup_figure(
+        labels,
+        title=f"Possible lineup for {team_display} ({season})",
+        slots_order=slots_order,
+        numbers=numbers,
+        stats=stats_list,
+    )
+
+    lineup_plotly_key = f"lineup_click_{selected_norm}_{season}"
+
+    try:
+        selected = plotly_events(
+            fig,
+            click_event=True,
+            hover_event=False,
+            select_event=False,
+            key=lineup_plotly_key,
+        )
+        if selected:
+            idx = selected[0].get("pointIndex", selected[0].get("pointNumber", 0))
+            idx = int(idx)
+            if 0 <= idx < len(stats_list):
+                s = stats_list[idx]
+                nm = names_for_click[idx]
+                st.markdown(f"**{nm} — quick stats**")
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("PTS/Game", f"{float(s['PTS/Game']):.3f}")
+                c2.metric("AST/Game", f"{float(s['AST/Game']):.3f}")
+                c3.metric("REB/Game", f"{float(s['REB/Game']):.3f}")
+                c4.metric("BLK/Game", f"{float(s['BLK/Game']):.3f}")
+                efgtxt = f"{float(s['eFG%']):.3f}%" if s["eFG%"] is not None else "—"
+                c5.metric("eFG%", efgtxt)
+        else:
+            st.caption("Tip: click a circle to pin a stat card; hover for details.")
+    except Exception:
+        st.plotly_chart(fig, use_container_width=True, key=f"lineup_chart_{selected_norm}_{season}")
+        st.caption("Tip: hover a circle to see stats. (Install `streamlit-plotly-events` to enable click.)")
 
     # ----------------------------
     # Notes section
