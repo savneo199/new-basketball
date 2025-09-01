@@ -357,6 +357,7 @@ def render():
                 st.plotly_chart(fig_radar, use_container_width=True)
 
     # Notes
+    st.write("##")
     st.markdown("---")
     st.subheader("Notes & Comments")
 
