@@ -355,6 +355,7 @@ def render():
                     title="Radar comparison"
                 )
                 st.plotly_chart(fig_radar, use_container_width=True)
+                st.write("##")
 
     # Notes
     st.write("##")
