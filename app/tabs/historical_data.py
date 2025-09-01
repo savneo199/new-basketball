@@ -52,9 +52,10 @@ def render():
         view = filt.drop(columns=drop_cols).copy()
     else:
         minimal_cols = [
-            "player_number_ind", "player_ind", "minutes_tot_ind", "Archetype", "scoring_pts_ind",
-            "ast_ind", "rebounds_tot_ind", "stl_ind", "gp_ind"
+            "player_number_ind", "player_ind", "mins_per_game", "Archetype", "pts_per_game",
+            "ast_per_game", "reb_per_game", "stl_per_game", "eFG_pct_ind"
         ]
+    
         cols = [c for c in minimal_cols if c in filt.columns]
         view = filt[cols].copy()
 
@@ -227,8 +228,8 @@ def render():
 
         # Default metric candidates 
         default_metric_candidates = [
-            "minutes_tot_ind", "scoring_pts_ind", "eFG_pct_ind",
-            "ast_ind", "rebounds_tot_ind", "stl_ind", "gp_ind"
+            "pts_per_game", "ast_per_game", "reb_per_game", 
+            "stl_per_game", "eFG_pct_ind", "to_per_game"
         ]
         default_metrics = [c for c in default_metric_candidates if c in numeric_cols_scope]
         if not default_metrics:
