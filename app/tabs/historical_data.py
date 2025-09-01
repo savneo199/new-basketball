@@ -245,7 +245,7 @@ def render():
         pretty_defaults = [pretty_map[c] for c in default_metrics if c in pretty_map]
 
         with st.container():
-            c1, c2, c3 = st.columns([2, 2, 1])
+            c1, c2 = st.columns([2, 2])
             with c1:
                 selected_labels = st.multiselect(
                     "Choose up to two players",
@@ -260,13 +260,7 @@ def render():
                     help="Select up to six metrics to compare.",
                     max_selections=6
                 )
-            with c3:
-                scale_domain = st.radio(
-                    "Radar scaling",
-                    options=["Within current view", "Within whole dataset"],
-                    index=1 if not cross_scope else 2,
-                    # help="Choose how the 0–1 scaling is computed for the radar axes."
-                )
+        
                 st.caption("Tip: Select Players with similar archetypes for better comparisons.")
 
         if not selected_labels:
@@ -320,12 +314,6 @@ def render():
                 )
 
                 # Radar chart
-                # Decide the scaling frame
-                # if scale_domain == "Within selected players":
-                #     scale_df = comp_df
-                # elif scale_domain == "Within current view":
-                #     scale_df = source_df  # filt or df depending on toggle
-                # else:
                 scale_df = df  # whole dataset
 
                 # Compute min-max per metric on the chosen scaling frame
